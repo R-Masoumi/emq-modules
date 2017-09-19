@@ -29,7 +29,21 @@ on_client_connected(?CONNACK_ACCEPT, Client = #mqtt_client{client_id  = ClientId
 
     Replace = fun(Topic) -> rep(<<"%u">>, Username, rep(<<"%c">>, ClientId, Topic)) end,
     TopicTable = [{Replace(Topic), Qos} || {Topic, Qos} <- Topics],
-    ClientPid ! {subscribe, TopicTable},
+    {ok, Redis} = eredis:start_link(),
+    FinalList = case eredis:q(Redis, ["sMembers", "mqtt_sub:" ++ Username]) of
+                {ok, OurTopics} ->
+                  case listAppend(TopicTable, OurTopics) of
+                    {ok, AppendedList} when is_list(AppendedList) ->
+                      AppendedList;
+                    {ok,_} ->
+                      TopicTable;
+                    {error} ->
+                      TopicTable
+                  end;
+                {error,Reason} ->
+                  TopicTable
+                  end,
+    ClientPid ! {subscribe, FinalList},
     {ok, Client};
 
 on_client_connected(_ConnAck, _Client, _State) ->
@@ -41,6 +55,19 @@ unload(_) ->
 %%--------------------------------------------------------------------
 %% Internal Functions
 %%--------------------------------------------------------------------
+
+listAppend(DefaultTopic,NewTopics) when length(NewTopics) > 0 ->
+  ListLast = lists:last(NewTopics),
+  LastDropped = lists:droplast(NewTopics),
+  Result = case listAppend(DefaultTopic,LastDropped) of
+             {ok,NewList} ->
+               lists:append(NewList,[{ListLast,2}]);
+             {error} ->
+               lists:append(DefaultTopic,[{ListLast,2}])
+           end,
+  {ok,Result};
+listAppend(_,_) ->
+{error}.
 
 rep(<<"%c">>, ClientId, Topic) ->
     emqttd_topic:feed_var(<<"%c">>, ClientId, Topic);
